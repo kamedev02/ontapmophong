@@ -45,6 +45,7 @@ dependencies:
   http:
   path_provider:
   archive:
+  connectivity_plus:
 
 dev_dependencies:
   flutter_launcher_icons:
