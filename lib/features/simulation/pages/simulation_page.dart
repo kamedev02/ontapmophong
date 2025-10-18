@@ -1,20 +1,25 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:multi_split_view/multi_split_view.dart';
+import 'package:ontapmophong/core/services/content_manager.dart';
 import 'package:ontapmophong/core/services/file_downloader.dart';
 import 'package:ontapmophong/features/simulation/widgets/download_indicator.dart';
 import 'package:ontapmophong/features/simulation/widgets/left_panel.dart';
+import 'package:ontapmophong/features/simulation/widgets/download_queue_fab.dart';
 import 'package:ontapmophong/features/simulation/widgets/right_panel.dart';
 import 'package:ontapmophong/features/simulation/widgets/video_player_panel.dart';
 import 'package:ontapmophong/models/chapter.dart';
 import 'package:ontapmophong/models/situation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:window_manager/window_manager.dart';
 
 class SimulationPage extends StatefulWidget {
   const SimulationPage({super.key});
@@ -46,11 +51,17 @@ class SimulationPageState extends State<SimulationPage> {
   bool _isPlay = false;
   double? _dragValue;
 
-  // Downloader variables
-  late final FileDownloader _fileDownloader;
-  bool _isDownloaded = false;
-  double _downloadProgress = 0.0;
-  String _downloadStatus = 'Kiểm tra tài nguyên...';
+  // Content & download variables
+  late final ContentManager _contentManager;
+  bool _isReady = false;
+  String _downloadStatus = 'Đang chuẩn bị dữ liệu...';
+  DownloadProgressInfo? _progressInfo;
+  Map<String, PackDownloadState> _packStates = {};
+  Set<String> _availableChapterIds = {};
+  StreamSubscription<InitialDownloadState>? _initialSubscription;
+  StreamSubscription<Map<String, PackDownloadState>>? _packStatesSubscription;
+  bool _showingFailureDialog = false;
+  bool _showDownloadQueue = false;
 
   @override
   void initState() {
@@ -58,17 +69,18 @@ class SimulationPageState extends State<SimulationPage> {
     player = Player();
     playerController = VideoController(player);
 
-    _fileDownloader = FileDownloader(
-      'https://api.kamedev.top/uploads/videos.zip',
-      'videos.zip',
-      'videos',
+    _contentManager = ContentManager(
+      manifestUrl:
+          'https://github.com/kamedev02/ontapmophong/releases/download/v25.10.1/manifest.json',
+      manifestAssetPath: 'assets/manifest.json',
     );
+
     _controller.areas = [
       Area(size: 200, min: 200, max: 200),
       Area(flex: 1),
       Area(size: 225, min: 225, max: 225),
     ];
-    _checkAndDownloadVideos();
+    _initializeContent();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       FocusScope.of(context).requestFocus(_playerFocusNode);
     });
@@ -76,52 +88,159 @@ class SimulationPageState extends State<SimulationPage> {
 
   @override
   void dispose() {
+    _initialSubscription?.cancel();
+    _packStatesSubscription?.cancel();
     player.dispose();
-    _fileDownloader.dispose();
+    unawaited(_contentManager.dispose());
     _controller.dispose();
     _playerFocusNode.dispose();
     super.dispose();
   }
 
   // --- LOGIC METHODS ---
-  Future<void> _checkAndDownloadVideos() async {
-    final directory = await getApplicationDocumentsDirectory();
-    final videosDir = Directory('${directory.path}/videos');
-    _isDownloaded = await videosDir.exists();
+  Future<void> _initializeContent() async {
+    await _initialSubscription?.cancel();
+    await _packStatesSubscription?.cancel();
+    _initialSubscription = null;
+    _packStatesSubscription = null;
 
-    if (_isDownloaded) {
-      _loadChapters();
-    } else {
-      _fileDownloader.downloadAndExtract();
-      _fileDownloader.progressStream.listen((progress) {
-        setState(() => _downloadProgress = progress);
+    _initialSubscription = _contentManager.initialDownloadStream.listen((
+      state,
+    ) {
+      if (!mounted) return;
+      setState(() {
+        _downloadStatus = state.message;
+        _progressInfo = state.progress;
+        if (state.isComplete) {
+          _progressInfo = state.progress ?? _progressInfo;
+        }
       });
-      _fileDownloader.statusStream.listen((status) {
-        setState(() {
-          _downloadStatus = status;
-          if (status == 'Hoàn thành!') {
-            _isDownloaded = true;
-            _downloadStatus = "Khởi chạy ứng dụng";
-            _loadChapters();
-          }
-        });
+    });
+
+    _packStatesSubscription = _contentManager.packStatesStream.listen((states) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _packStates = states;
+        _availableChapterIds = states.entries
+            .where((entry) => entry.value.stage == PackDownloadStage.completed)
+            .map((entry) => entry.key)
+            .toSet();
+        _rebuildAvailableSituations();
+        if (_selectedOption == 'Thi thử') {
+          _generateQuizTHs();
+        }
       });
+    });
+
+    try {
+      await _contentManager.initialize();
+      await _loadChapters();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isReady = true;
+        _downloadStatus = 'Khởi chạy ứng dụng';
+      });
+    } on ContentInitializationException catch (error) {
+      await _handleInitializationFailure(error.message);
+    } catch (error) {
+      await _handleInitializationFailure(error.toString());
     }
   }
 
   Future<void> _loadChapters() async {
     try {
-      final String jsonString = await rootBundle.loadString('assets/data.json');
+      final String jsonString = await _contentManager.loadDataJson();
       final List<dynamic> jsonList = json.decode(jsonString);
       setState(() {
         _chapters = jsonList.map((e) => Chapter.fromJson(e)).toList();
-        _allSituations = _chapters
-            .expand((chapter) => chapter.situations)
-            .toList();
       });
+      _rebuildAvailableSituations();
       _generateQuizTHs();
     } catch (e) {
       debugPrint('Lỗi khi tải tài nguyên: $e');
+    }
+  }
+
+  void _rebuildAvailableSituations() {
+    final availableChapters = _chapters
+        .where((chapter) => _availableChapterIds.contains(chapter.folder))
+        .toList();
+    _allSituations = availableChapters
+        .expand((chapter) => chapter.situations)
+        .toList();
+
+    if (_selectedSituation != null) {
+      _currentSituationIndex = _allSituations.indexWhere(
+        (situation) => situation.id == _selectedSituation!.id,
+      );
+    } else {
+      _currentSituationIndex = -1;
+    }
+  }
+
+  Future<void> _handleInitializationFailure(String message) async {
+    if (!mounted || _showingFailureDialog) {
+      return;
+    }
+    _showingFailureDialog = true;
+
+    final result = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Không thể tải dữ liệu'),
+        content: Text('$message\n\nBạn muốn làm gì tiếp theo?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop('exit'),
+            child: const Text('Đóng ứng dụng'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop('retry'),
+            child: const Text('Tải lại'),
+          ),
+        ],
+      ),
+    );
+
+    _showingFailureDialog = false;
+
+    if (result == 'retry') {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _progressInfo = null;
+        _downloadStatus = 'Đang khởi động lại tải xuống...';
+        _packStates = {};
+        _availableChapterIds = {};
+        _isReady = false;
+        _allSituations = [];
+        _selectedSituation = null;
+        _selectedSituationId = null;
+        _currentSituationIndex = -1;
+        _currentVideoPath = null;
+      });
+      await _initialSubscription?.cancel();
+      await _packStatesSubscription?.cancel();
+      _initialSubscription = null;
+      _packStatesSubscription = null;
+      await _contentManager.dispose();
+      _contentManager = ContentManager(
+        manifestUrl:
+            'https://github.com/kamedev02/ontapmophong/releases/download/v25.10.1/manifest.json',
+        manifestAssetPath: 'assets/manifest.json',
+      );
+      await _initializeContent();
+      return;
+    }
+
+    if (result == 'exit') {
+      await windowManager.close();
     }
   }
 
@@ -132,13 +251,16 @@ class SimulationPageState extends State<SimulationPage> {
     final Map<int, int> situationCounts = {0: 2, 1: 1, 2: 2, 3: 1, 4: 2, 5: 2};
 
     situationCounts.forEach((chapterIndex, count) {
-      if (chapterIndex < _chapters.length) {
-        final chapterSituations = List<Situation>.from(
-          _chapters[chapterIndex].situations,
-        );
-        chapterSituations.shuffle(random);
-        _quizSituations.addAll(chapterSituations.take(count));
+      if (chapterIndex >= _chapters.length) {
+        return;
       }
+      final chapter = _chapters[chapterIndex];
+      if (!_availableChapterIds.contains(chapter.folder)) {
+        return;
+      }
+      final chapterSituations = List<Situation>.from(chapter.situations);
+      chapterSituations.shuffle(random);
+      _quizSituations.addAll(chapterSituations.take(count));
     });
 
     _quizSituations.shuffle(random);
@@ -149,13 +271,77 @@ class SimulationPageState extends State<SimulationPage> {
     String situation,
     String filename,
   ) async {
-    final directory = await getApplicationDocumentsDirectory();
-    return p.join(directory.path, 'videos', chapter, situation, filename);
+    final baseDir =
+        _contentManager.baseDirectory ??
+        Directory(
+          p.join(
+            (await getApplicationDocumentsDirectory()).path,
+            _contentManager.basePath,
+          ),
+        );
+    return p.join(baseDir.path, chapter, situation, filename);
   }
 
   void _loadAndPlay(String filepath) {
     player.open(Media('file://$filepath'), play: false);
     debugPrint('Đã mở file: file://$filepath');
+  }
+
+  Future<bool> _ensurePlaylistAvailable(
+    Chapter chapter,
+    Situation situation,
+  ) async {
+    try {
+      await _contentManager.ensurePlaylistIntegrity(
+        chapterId: chapter.folder,
+        situationFolder: situation.folder,
+        playlistFile: situation.urlVideo,
+      );
+      return true;
+    } on ContentInitializationException catch (error) {
+      if (!mounted) {
+        return false;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
+      return false;
+    } catch (error) {
+      debugPrint('Lỗi kiểm tra playlist: $error');
+      if (!mounted) {
+        return false;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Không thể kiểm tra dữ liệu video.')),
+      );
+      return false;
+    }
+  }
+
+  Future<void> _playSituation(Chapter chapter, Situation situation) async {
+    final videoPath = await _generateVideoPath(
+      chapter.folder,
+      situation.folder,
+      situation.urlVideo,
+    );
+
+    final ready = await _ensurePlaylistAvailable(chapter, situation);
+    if (!ready || !mounted) {
+      return;
+    }
+
+    final index = _allSituations.indexWhere((item) => item.id == situation.id);
+
+    setState(() {
+      _selectedSituationId = situation.id;
+      _selectedSituation = situation;
+      _currentVideoPath = videoPath;
+      _flagPosition = null;
+      _showSegment = false;
+      _isPlay = false;
+      _currentSituationIndex = index;
+    });
+    _loadAndPlay(_currentVideoPath!);
   }
 
   // --- UI HANDLER METHODS ---
@@ -177,21 +363,7 @@ class SimulationPageState extends State<SimulationPage> {
   }
 
   void _handleSituationSelected(Chapter chapter, Situation situation) async {
-    String videoPath = await _generateVideoPath(
-      chapter.folder,
-      situation.folder,
-      situation.urlVideo,
-    );
-    setState(() {
-      _selectedSituationId = situation.id;
-      _selectedSituation = situation;
-      _currentVideoPath = videoPath;
-      _flagPosition = null;
-      _showSegment = false;
-      _isPlay = false;
-      _currentSituationIndex = _allSituations.indexOf(situation);
-    });
-    _loadAndPlay(_currentVideoPath!);
+    await _playSituation(chapter, situation);
   }
 
   void _handlePlay() {
@@ -225,21 +397,7 @@ class SimulationPageState extends State<SimulationPage> {
       final chapter = _chapters.firstWhere(
         (chap) => chap.situations.contains(nextSituation),
       );
-      final videoPath = await _generateVideoPath(
-        chapter.folder,
-        nextSituation.folder,
-        nextSituation.urlVideo,
-      );
-      setState(() {
-        _currentSituationIndex++;
-        _selectedSituation = nextSituation;
-        _selectedSituationId = nextSituation.id;
-        _currentVideoPath = videoPath;
-        _flagPosition = null;
-        _showSegment = false;
-        _isPlay = false;
-        _loadAndPlay(_currentVideoPath!);
-      });
+      await _playSituation(chapter, nextSituation);
     }
   }
 
@@ -249,21 +407,7 @@ class SimulationPageState extends State<SimulationPage> {
       final chapter = _chapters.firstWhere(
         (chap) => chap.situations.contains(prevSituation),
       );
-      final videoPath = await _generateVideoPath(
-        chapter.folder,
-        prevSituation.folder,
-        prevSituation.urlVideo,
-      );
-      setState(() {
-        _currentSituationIndex--;
-        _selectedSituation = prevSituation;
-        _selectedSituationId = prevSituation.id;
-        _currentVideoPath = videoPath;
-        _flagPosition = null;
-        _showSegment = false;
-        _isPlay = false;
-        _loadAndPlay(_currentVideoPath!);
-      });
+      await _playSituation(chapter, prevSituation);
     }
   }
 
@@ -309,11 +453,30 @@ class SimulationPageState extends State<SimulationPage> {
 
   @override
   Widget build(BuildContext context) {
+    final chapterStatusLabels = <String, String>{
+      for (final entry in _packStates.entries) entry.key: entry.value.message,
+    };
+    final pendingDownloads = _packStates.values
+        .where((state) => state.stage != PackDownloadStage.completed)
+        .toList();
+
     return Scaffold(
-      body: (!_isDownloaded)
+      floatingActionButton: pendingDownloads.isEmpty
+          ? null
+          : DownloadQueueFab(
+              expanded: _showDownloadQueue,
+              downloads: pendingDownloads,
+              onToggle: () {
+                setState(() {
+                  _showDownloadQueue = !_showDownloadQueue;
+                });
+              },
+            ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.miniEndFloat,
+      body: (!_isReady)
           ? DownloadIndicator(
               downloadStatus: _downloadStatus,
-              downloadProgress: _downloadProgress,
+              progressInfo: _progressInfo,
             )
           : MultiSplitView(
               controller: _controller,
@@ -325,6 +488,8 @@ class SimulationPageState extends State<SimulationPage> {
                       chapters: _chapters,
                       selectedSituationId: _selectedSituationId,
                       isPlay: _isPlay,
+                      availableChapters: _availableChapterIds,
+                      chapterStatuses: chapterStatusLabels,
                       onModeChanged: _handleModeChange,
                       onSituationSelected: _handleSituationSelected,
                       onPlay: _handlePlay,
@@ -375,7 +540,8 @@ class SimulationPageState extends State<SimulationPage> {
                       },
                       onScoreChanged: (score) =>
                           setState(() => _grades = score),
-                      scoreSegments: _showSegment
+                      scoreSegments:
+                          (_showSegment && _selectedSituation != null)
                           ? _selectedSituation!.scoreSegments
                           : [],
                     );

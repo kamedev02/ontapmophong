@@ -1,0 +1,56 @@
+{
+  "version": "v25.10.1",
+  "updatedAt": "2025-10-18T09:50:52.164Z",
+  "basePath": "videos",
+  "dataJson": "data.json",
+  "packs": [
+    {
+      "id": "chapter1",
+      "title": "Chương 1: Giao thông trên đường phố",
+      "situationCount": 29,
+      "url": "https://github.com/kamedev02/ontapmophong/releases/download/v25.10.1/chapter1.zip",
+      "size": 465296522,
+      "sha256": "dacd2dcb2929ac63877f0e51a9a4dbe8af6f78ce2e8afa12938e62a9d57c0faf"
+    },
+    {
+      "id": "chapter2",
+      "title": "Chương 2: Giao thông trên đường giao thông nông thông.",
+      "situationCount": 14,
+      "url": "https://github.com/kamedev02/ontapmophong/releases/download/v25.10.1/chapter2.zip",
+      "size": 213636707,
+      "sha256": "41a07e44f60515a97ce0b7f2761c8eedc40b576ed28b458c4c4bc43750ee1283"
+    },
+    {
+      "id": "chapter3",
+      "title": "Chương 3: Giao thông trên đường cao tốc",
+      "situationCount": 20,
+      "url": "https://github.com/kamedev02/ontapmophong/releases/download/v25.10.1/chapter3.zip",
+      "size": 277266218,
+      "sha256": "057c6c539b5f13621af186fddecda3d4eb81f62120e62f7ff08d102e46548817"
+    },
+    {
+      "id": "chapter4",
+      "title": "Chương 4: Giao thông trên đường núi",
+      "situationCount": 10,
+      "url": "https://github.com/kamedev02/ontapmophong/releases/download/v25.10.1/chapter4.zip",
+      "size": 173364187,
+      "sha256": "b0b4756cb02fd90d90aa33767f470c75f7e1ae1c238d2be75937d32efcd2f43a"
+    },
+    {
+      "id": "chapter5",
+      "title": "Chương 5: Giao thông trên đường quốc lộ",
+      "situationCount": 17,
+      "url": "https://github.com/kamedev02/ontapmophong/releases/download/v25.10.1/chapter5.zip",
+      "size": 237981483,
+      "sha256": "93803393bbcdb086b1f59a8a382e3005994b3024223ffce10ce244fc90b470ad"
+    },
+    {
+      "id": "chapter6",
+      "title": "Chương 6: Các tình huống từ các vụ tai nạn điển hình đã xảy ra trong thực tế",
+      "situationCount": 30,
+      "url": "https://github.com/kamedev02/ontapmophong/releases/download/v25.10.1/chapter6.zip",
+      "size": 379357847,
+      "sha256": "b15126b11147b3cac2e8b2a2cf8f90d8cdbe179cc1460bdc5901a36edde5faf9"
+    }
+  ]
+}
