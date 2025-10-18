@@ -8,6 +8,8 @@ class LeftPanel extends StatelessWidget {
   final List<Chapter> chapters;
   final String? selectedSituationId;
   final bool isPlay;
+  final Set<String> availableChapters;
+  final Map<String, String> chapterStatuses;
   final ValueChanged<String?> onModeChanged;
   final Function(Chapter chapter, Situation situation) onSituationSelected;
   final VoidCallback onPlay;
@@ -23,6 +25,8 @@ class LeftPanel extends StatelessWidget {
     required this.chapters,
     this.selectedSituationId,
     required this.isPlay,
+    required this.availableChapters,
+    required this.chapterStatuses,
     required this.onModeChanged,
     required this.onSituationSelected,
     required this.onPlay,
@@ -63,17 +67,36 @@ class LeftPanel extends StatelessWidget {
                   itemCount: chapters.length,
                   itemBuilder: (context, chapterIndex) {
                     final chapter = chapters[chapterIndex];
-                    return ExpansionTile(
-                      title: Text(chapter.title.split(":").first),
-                      children: chapter.situations.map((situation) {
-                        return RadioListTile<String>(
-                          title: Text(situation.title.split(":").first),
-                          value: situation.id,
-                          groupValue: selectedSituationId,
-                          onChanged: (_) =>
-                              onSituationSelected(chapter, situation),
-                        );
-                      }).toList(),
+                    final isEnabled =
+                        availableChapters.contains(chapter.folder);
+                    final statusText = chapterStatuses[chapter.folder];
+                    final showStatus = statusText != null &&
+                        (!isEnabled || statusText != 'Đã sẵn sàng');
+
+                    return Opacity(
+                      opacity: isEnabled ? 1.0 : 0.4,
+                      child: IgnorePointer(
+                        ignoring: !isEnabled,
+                        child: ExpansionTile(
+                          title: Text(chapter.title.split(":").first),
+                          subtitle: showStatus
+                              ? Text(
+                                  statusText!,
+                                  style:
+                                      Theme.of(context).textTheme.bodySmall,
+                                )
+                              : null,
+                          children: chapter.situations.map((situation) {
+                            return RadioListTile<String>(
+                              title: Text(situation.title.split(":").first),
+                              value: situation.id,
+                              groupValue: selectedSituationId,
+                              onChanged: (_) =>
+                                  onSituationSelected(chapter, situation),
+                            );
+                          }).toList(),
+                        ),
+                      ),
                     );
                   },
                 ),
